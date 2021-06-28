@@ -1,16 +1,19 @@
-import nock from 'nock'
-import { Wallet, providers, BigNumber } from 'ethers'
 import { TransactionResponse } from '@ethersproject/abstract-provider'
-import { baseAmount, AssetETH, assetToString, assetFromString, ETHChain } from '@xchainjs/xchain-util'
-import Client from '../src/client'
-import { ETH_DECIMAL } from '../src/utils'
+import { AssetETH, ETHChain, assetFromString, assetToString, baseAmount } from '@xchainjs/xchain-util'
+import { providers, BigNumber, Signer } from 'ethers'
+import nock from 'nock'
+
 import { mock_all_api } from '../__mocks__'
 import {
   mock_etherscan_eth_txs_api,
   mock_etherscan_token_txs_api,
   mock_gastracker_api,
 } from '../__mocks__/etherscan-api'
+import { Client, MAINNET_PARAMS, TESTNET_PARAMS } from '../src/client'
 import erc20ABI from '../src/data/erc20.json'
+import { ETH_DECIMAL } from '../src/utils'
+import { Wallet } from '../src/wallet'
+import { FeeOption } from '@xchainjs/xchain-client'
 
 const phrase = 'canyon throw labor waste awful century ugly they found post source draft'
 const newPhrase = 'logic neutral rug brain pluck submit earth exit erode august remain ready'
@@ -18,129 +21,99 @@ const address = '0xb8c0c226d6fe17e5d9132741836c3ae82a5b6c4e'
 const etherscanUrl = 'https://api-ropsten.etherscan.io'
 const ropstenInfuraUrl = 'https://ropsten.infura.io/v3'
 const ropstenAlchemyUrl = 'https://eth-ropsten.alchemyapi.io/v2'
-const wallet = {
-  signingKey: {
-    curve: 'secp256k1',
-    privateKey: '0x739172c3520ea86ad6238b4f303cc09da6ca7254c76af1a1e8fa3fb00eb5c16f',
-    publicKey:
-      '0x04ef84375983ef666afdf0e430929574510aa56fb5ee0ee8c02a73f2d2c12ff8f7eee6cdaf9ab6d14fdeebc7ff3d7890f5f98376dac0e5d816dca347bc71d2aec8',
-    compressedPublicKey: '0x02ef84375983ef666afdf0e430929574510aa56fb5ee0ee8c02a73f2d2c12ff8f7',
-    _isSigningKey: true,
-  },
-}
 
 /**
  * Wallet Tests
  */
 describe('Client Test', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     nock.disableNetConnect()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     nock.cleanAll()
   })
 
-  it('should throw error on bad phrase', () => {
-    expect(() => {
-      new Client({ phrase: 'bad bad phrase' })
-    }).toThrowError()
+  it('should throw error on bad phrase', async () => {
+    await expect(Client.create(TESTNET_PARAMS, Wallet.create('bad bad phrase'))).rejects.toThrowError()
   })
 
-  it('should create a wallet from phrase', () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
-    expect(ethClient.getWallet()).toBeInstanceOf(Wallet)
-    expect(ethClient.getWallet()._signingKey()).toMatchObject(wallet.signingKey)
+  it('should create a wallet from phrase', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    expect(await ethClient.getSigner()).toBeInstanceOf(Signer)
   })
 
-  it('should set new phrase', () => {
-    const ethClient = new Client({ phrase })
-    const newWallet = ethClient.setPhrase(newPhrase)
-    expect(ethClient.getWallet().mnemonic.phrase).toEqual(newPhrase)
-    expect(newWallet).toBeTruthy()
+  it('should set new phrase', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    await expect(ethClient.unlock(Wallet.create(newPhrase))).resolves.not.toThrow()
   })
 
-  it('should fail to set new phrase', () => {
-    const ethClient = new Client({ phrase })
-    expect(() => ethClient.setPhrase('bad bad phrase')).toThrowError()
+  it('should fail to set new phrase', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    await expect(ethClient.unlock(Wallet.create('bad bad phrase'))).rejects.toThrowError()
   })
 
   it('should connect to specified network', async () => {
-    const ethClient = new Client({
-      network: 'mainnet',
-      phrase,
-    })
+    const ethClient = await Client.create(MAINNET_PARAMS, Wallet.create(phrase))
 
-    expect(ethClient.getWallet()).toBeInstanceOf(Wallet)
-    expect(ethClient.getWallet().provider).toBeInstanceOf(providers.FallbackProvider)
-    expect(ethClient.getWallet()._signingKey()).toMatchObject(wallet.signingKey)
-    const network = await ethClient.getWallet().provider.getNetwork()
-    expect(network.name).toEqual('homestead')
-    expect(network.chainId).toEqual(1)
+    expect(await ethClient.getSigner()).toBeInstanceOf(Signer)
+    expect((await ethClient.getSigner()).provider).toBeInstanceOf(providers.FallbackProvider)
+    const network = await (await ethClient.getSigner()).provider?.getNetwork()
+    expect(network?.name).toEqual('homestead')
+    expect(network?.chainId).toEqual(1)
   })
 
   it('should connect to Infura provider', async () => {
-    const ethClient = new Client({
-      network: 'mainnet',
-      phrase,
-      infuraCreds: {
-        projectId: '',
-        projectSecret: '',
+    const ethClient = await Client.create(
+      {
+        ...MAINNET_PARAMS,
+        infuraCreds: {
+          projectId: '',
+          projectSecret: '',
+        },
       },
-    })
+      Wallet.create(phrase),
+    )
 
-    expect(ethClient.getWallet().provider).toBeInstanceOf(providers.InfuraProvider)
+    expect((await ethClient.getSigner()).provider).toBeInstanceOf(providers.InfuraProvider)
   })
 
   it('should set network', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
-    ethClient.setNetwork('testnet')
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
-    const network = await ethClient.getWallet().provider.getNetwork()
-    expect(network.name).toEqual('ropsten')
-    expect(network.chainId).toEqual(3)
+    const network = await (await ethClient.getSigner()).provider?.getNetwork()
+    expect(network?.name).toEqual('ropsten')
+    expect(network?.chainId).toEqual(3)
   })
 
-  it('should get address', () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
-    expect(ethClient.getAddress()).toEqual(address)
+  it('should get address', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    expect(await ethClient.getAddress()).toEqual(address)
   })
 
-  it('should get network', () => {
-    const ethClient = new Client({ phrase, network: 'testnet' })
+  it('should get network', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
     expect(ethClient.getNetwork()).toEqual('testnet')
   })
 
-  it('should fail a bad address', () => {
-    const ethClient = new Client({ phrase, network: 'testnet' })
-    expect(ethClient.validateAddress('0xBADbadBad')).toBeFalsy()
+  it('should fail a bad address', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    expect(await ethClient.validateAddress('0xBADbadBad')).toBeFalsy()
   })
 
-  it('should pass a good address', () => {
-    const ethClient = new Client({ phrase, network: 'testnet' })
-    const goodAddress = ethClient.validateAddress(address)
+  it('should pass a good address', async () => {
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    const goodAddress = await ethClient.validateAddress(address)
     expect(goodAddress).toBeTruthy()
   })
 
   it('throws error on bad index', async () => {
-    const ethClient = new Client({ network: 'testnet', phrase })
-    expect(() => ethClient.getAddress(-1)).toThrow()
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
+    await expect(ethClient.getAddress(-1)).rejects.toThrow()
   })
 
   it('get eth transaction history', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_etherscan_eth_txs_api(etherscanUrl, [
       {
@@ -181,10 +154,7 @@ describe('Client Test', () => {
   })
 
   it('get token transaction history', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_etherscan_token_txs_api(etherscanUrl, [
       {
@@ -230,10 +200,7 @@ describe('Client Test', () => {
   })
 
   it('get transaction data', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -295,10 +262,7 @@ describe('Client Test', () => {
   })
 
   it('ETH transfer', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -332,10 +296,7 @@ describe('Client Test', () => {
   })
 
   it('ERC20 transfer', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -378,7 +339,7 @@ describe('Client Test', () => {
   })
 
   it('estimate gas for eth transfer', async () => {
-    const ethClient = new Client({ network: 'testnet', phrase })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -409,7 +370,7 @@ describe('Client Test', () => {
   })
 
   it('estimate gas for erc20 transfer', async () => {
-    const ethClient = new Client({ network: 'testnet', phrase })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -441,10 +402,7 @@ describe('Client Test', () => {
   })
 
   it('isApproved', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -473,10 +431,7 @@ describe('Client Test', () => {
   })
 
   it('estimateApprove', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -492,10 +447,7 @@ describe('Client Test', () => {
   })
 
   it('approve', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -513,17 +465,14 @@ describe('Client Test', () => {
       walletIndex: 0,
       spender: '0x8c2a90d36ec9f745c9b28b588cba5e2a978a1656',
       sender: '0xd15ffaef3112460bf3bcd81087fcbbce394e2ae7',
-      feeOptionKey: 'fastest',
+      feeOptionKey: FeeOption.Fastest,
       amount: baseAmount(100, ETH_DECIMAL),
     })
     expect(tx.hash).toEqual('0x168ecebeeca0cd33d7151fa334cf8279ccacb58e855ede8276dfe6f77cafd55c')
   })
 
   it('estimate call', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')
@@ -542,10 +491,7 @@ describe('Client Test', () => {
   })
 
   it('call', async () => {
-    const ethClient = new Client({
-      network: 'testnet',
-      phrase,
-    })
+    const ethClient = await Client.create(TESTNET_PARAMS, Wallet.create(phrase))
 
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_blockNumber', '0x3c6de5')
     mock_all_api(etherscanUrl, ropstenInfuraUrl, ropstenAlchemyUrl, 'eth_getTransactionCount', '0x10')

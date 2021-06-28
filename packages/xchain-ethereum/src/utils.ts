@@ -1,20 +1,20 @@
-import { Balances, Fees, Network as XChainNetwork, Tx } from '@xchainjs/xchain-client'
+import { Balance, Fees, FeeType, Network, Tx, TxType } from '@xchainjs/xchain-client'
 import {
   Asset,
   AssetETH,
-  assetFromString,
-  baseAmount,
-  ETHChain,
   BaseAmount,
+  Chain,
+  assetFromString,
   assetToString,
   assetAmount,
   assetToBase,
+  baseAmount,
 } from '@xchainjs/xchain-util'
 import { ethers, BigNumber, providers } from 'ethers'
 import { parseUnits } from 'ethers/lib/utils'
 import {
-  Network as EthNetwork,
   Address,
+  EthNetwork,
   ETHTransactionInfo,
   TokenTransactionInfo,
   FeesWithGasPricesAndLimits,
@@ -39,39 +39,27 @@ export const DEFAULT_GAS_PRICE = 50
 export const ETHAddress = '0x0000000000000000000000000000000000000000'
 export const MAX_APPROVAL = BigNumber.from(2).pow(256).sub(1)
 
-/**
- * XChainNetwork -> EthNetwork
- *
- * @param {XChainNetwork} network
- * @returns {EthNetwork}
- */
-export const xchainNetworkToEths = (network: XChainNetwork): EthNetwork => {
+export const xchainNetworkToEths = (network: Network): EthNetwork => {
   switch (network) {
     // DO NOT use switch/case's default branch
     // to be sure that ALL possible cases are
     // processed in a similar way to reverted ethNetworkToXchains
-    case 'mainnet':
-      return EthNetwork.MAIN
-    case 'testnet':
-      return EthNetwork.TEST
+    case Network.Mainnet:
+      return EthNetwork.Main
+    case Network.Testnet:
+      return EthNetwork.Test
   }
 }
 
-/**
- * EthNetwork -> XChainNetwork
- *
- * @param {EthNetwork} network
- * @returns {XChainNetwork}
- */
-export const ethNetworkToXchains = (network: EthNetwork): XChainNetwork => {
+export const ethNetworkToXchains = (network: EthNetwork): Network => {
   switch (network) {
     // DO NOT use switch/case's default branch
     // to be sure that ALL possible cases are
     // processed in a similar way to reverted xchainNetworkToEths
-    case EthNetwork.MAIN:
-      return 'mainnet'
-    case EthNetwork.TEST:
-      return 'testnet'
+    case EthNetwork.Main:
+      return Network.Mainnet
+    case EthNetwork.Test:
+      return Network.Testnet
   }
 }
 
@@ -124,7 +112,7 @@ export const getTxFromTokenTransaction = (tx: TokenTransactionInfo): Tx | null =
   const symbol = tx.tokenSymbol
   const address = tx.contractAddress
   if (validateSymbol(symbol) && validateAddress(address)) {
-    const tokenAsset = assetFromString(`${ETHChain}.${symbol}-${address}`)
+    const tokenAsset = assetFromString(`${Chain.Ethereum}.${symbol}-${address}`)
     if (tokenAsset) {
       return {
         asset: tokenAsset,
@@ -141,7 +129,7 @@ export const getTxFromTokenTransaction = (tx: TokenTransactionInfo): Tx | null =
           },
         ],
         date: new Date(parseInt(tx.timeStamp) * 1000),
-        type: 'transfer',
+        type: TxType.Transfer,
         hash: tx.hash,
       }
     }
@@ -172,7 +160,7 @@ export const getTxFromEthTransaction = (tx: ETHTransactionInfo): Tx => {
       },
     ],
     date: new Date(parseInt(tx.timeStamp) * 1000),
-    type: 'transfer',
+    type: TxType.Transfer,
     hash: tx.hash,
   }
 }
@@ -187,7 +175,7 @@ export const getTxFromEthplorerTokenOperation = (operation: TransactionOperation
   const decimals = parseInt(operation.tokenInfo.decimals) || ETH_DECIMAL
   const { symbol, address } = operation.tokenInfo
   if (validateSymbol(symbol) && validateAddress(address)) {
-    const tokenAsset = assetFromString(`${ETHChain}.${symbol}-${address}`)
+    const tokenAsset = assetFromString(`${Chain.Ethereum}.${symbol}-${address}`)
     if (tokenAsset) {
       return {
         asset: tokenAsset,
@@ -204,7 +192,7 @@ export const getTxFromEthplorerTokenOperation = (operation: TransactionOperation
           },
         ],
         date: new Date(operation.timestamp * 1000),
-        type: operation.type === 'transfer' ? 'transfer' : 'unknown',
+        type: operation.type === 'transfer' ? TxType.Transfer : TxType.Unknown,
         hash: operation.transactionHash,
       }
     }
@@ -235,7 +223,7 @@ export const getTxFromEthplorerEthTransaction = (txInfo: TransactionInfo): Tx =>
       },
     ],
     date: new Date(txInfo.timestamp * 1000),
-    type: 'transfer',
+    type: TxType.Transfer,
     hash: txInfo.hash,
   }
 }
@@ -272,7 +260,7 @@ export const estimateDefaultFeesWithGasPricesAndLimits = (asset?: Asset): FeesWi
     gasPrices,
     gasLimit,
     fees: {
-      type: 'byte',
+      type: FeeType.PerByte,
       average: getFee({ gasPrice: averageGP, gasLimit }),
       fast: getFee({ gasPrice: fastGP, gasLimit }),
       fastest: getFee({ gasPrice: fastestGP, gasLimit }),
@@ -299,14 +287,6 @@ export const getDefaultGasPrices = (asset?: Asset): GasPrices => {
   const { gasPrices } = estimateDefaultFeesWithGasPricesAndLimits(asset)
   return gasPrices
 }
-
-/**
- * Get address prefix based on the network.
- *
- * @returns {string} The address prefix based on the network.
- *
- **/
-export const getPrefix = () => '0x'
 
 /**
  * Filter self txs
@@ -362,23 +342,20 @@ export const getDecimal = async (asset: Asset, provider: providers.Provider): Pr
  * @returns {Array<Balance>} the parsed balances
  *
  */
-export const getTokenBalances = (tokenBalances: TokenBalance[]): Balances => {
-  return tokenBalances.reduce((acc, cur) => {
-    const { symbol, address: tokenAddress } = cur.tokenInfo
-    if (validateSymbol(symbol) && validateAddress(tokenAddress) && cur?.tokenInfo?.decimals !== undefined) {
-      const decimals = parseInt(cur.tokenInfo.decimals, 10)
-      const tokenAsset = assetFromString(`${ETHChain}.${symbol}-${ethers.utils.getAddress(tokenAddress)}`)
+export const getTokenBalances = (tokenBalances: TokenBalance[]): Balance[] => {
+  const out: Balance[] = []
+  for (const tokenBalance of tokenBalances) {
+    const { symbol, address: tokenAddress } = tokenBalance.tokenInfo
+    if (validateSymbol(symbol) && validateAddress(tokenAddress) && tokenBalance?.tokenInfo?.decimals !== undefined) {
+      const decimals = parseInt(tokenBalance.tokenInfo.decimals, 10)
+      const tokenAsset = assetFromString(`${Chain.Ethereum}.${symbol}-${ethers.utils.getAddress(tokenAddress)}`)
       if (tokenAsset) {
-        return [
-          ...acc,
-          {
-            asset: tokenAsset,
-            amount: baseAmount(cur.balance, decimals),
-          },
-        ]
+        out.push({
+          asset: tokenAsset,
+          amount: baseAmount(tokenBalance.balance, decimals),
+        })
       }
     }
-
-    return acc
-  }, [] as Balances)
+  }
+  return out
 }

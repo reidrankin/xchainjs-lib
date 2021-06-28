@@ -1,28 +1,5 @@
-import { Network, Tx } from '@xchainjs/xchain-client/lib'
-import { Asset, BaseAmount } from '@xchainjs/xchain-util'
-
-export type NodeUrl = {
-  node: string
-  rpc: string
-}
-
-export type ClientUrl = {
-  testnet: NodeUrl
-  mainnet: NodeUrl
-}
-
-export type ExplorerUrls = {
-  root: ExplorerUrl
-  tx: ExplorerUrl
-  address: ExplorerUrl
-}
-
-export type ExplorerUrl = Record<Network, string>
-
-export type ThorchainClientParams = {
-  clientUrl?: ClientUrl
-  explorerUrls?: ExplorerUrls
-}
+import { Tx } from '@xchainjs/xchain-client'
+import { Asset, BaseAmount, Chain } from '@xchainjs/xchain-util'
 
 export type DepositParam = {
   walletIndex?: number
@@ -31,7 +8,6 @@ export type DepositParam = {
   memo: string
 }
 
-export const THORChain = 'THOR'
-export const AssetRune: Asset = { chain: THORChain, symbol: 'RUNE', ticker: 'RUNE' }
+export const AssetRune: Asset = { chain: Chain.THORChain, symbol: 'RUNE', ticker: 'RUNE' }
 
 export type TxData = Pick<Tx, 'from' | 'to' | 'type'>

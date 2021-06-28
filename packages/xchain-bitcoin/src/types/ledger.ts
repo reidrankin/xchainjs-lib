@@ -1,5 +1,4 @@
-import { Address, Network, TxParams } from '@xchainjs/xchain-client'
-import { FeeRate } from './client-types'
+import { Address, Network, FeeRate, TxParams } from '@xchainjs/xchain-client'
 import { UTXOs } from './common'
 
 export type LedgerTxInfo = {
@@ -7,7 +6,10 @@ export type LedgerTxInfo = {
   newTxHex: string
 }
 
-export type LedgerTxInfoParams = Pick<TxParams, 'amount' | 'recipient'> & {
+type OnlyRequiredKeys<T, U = keyof T> = U extends keyof T ? (undefined extends T[U] ? never : U) : never
+type OnlyRequired<T> = Pick<T, OnlyRequiredKeys<T>>
+
+export type LedgerTxInfoParams = OnlyRequired<TxParams> & {
   feeRate: FeeRate
   sender: Address
   network: Network

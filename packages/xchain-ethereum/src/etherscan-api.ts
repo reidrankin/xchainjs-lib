@@ -7,9 +7,10 @@ import {
   TokenBalanceParam,
 } from './types'
 import { BigNumberish } from 'ethers'
-import { Txs } from '@xchainjs/xchain-client/lib'
+import { Tx } from '@xchainjs/xchain-client'
+import { bnOrZero } from '@xchainjs/xchain-util'
+
 import { filterSelfTxs, getTxFromEthTransaction, getTxFromTokenTransaction } from './utils'
-import { bnOrZero } from '@xchainjs/xchain-util/lib'
 
 const getApiKeyQueryParameter = (apiKey?: string): string => (!!apiKey ? `&apiKey=${apiKey}` : '')
 
@@ -69,7 +70,7 @@ export const getETHTransactionHistory = async ({
   startblock,
   endblock,
   apiKey,
-}: TransactionHistoryParam & { baseUrl: string; apiKey?: string }): Promise<Txs> => {
+}: TransactionHistoryParam & { baseUrl: string; apiKey?: string }): Promise<Tx[]> => {
   let url = baseUrl + `/api?module=account&action=txlist&sort=desc` + getApiKeyQueryParameter(apiKey)
   if (address) url += `&address=${address}`
   if (offset) url += `&offset=${offset}`
@@ -114,7 +115,7 @@ export const getTokenTransactionHistory = async ({
   startblock,
   endblock,
   apiKey,
-}: TransactionHistoryParam & { baseUrl: string; apiKey?: string }): Promise<Txs> => {
+}: TransactionHistoryParam & { baseUrl: string; apiKey?: string }): Promise<Tx[]> => {
   let url = baseUrl + `/api?module=account&action=tokentx&sort=desc` + getApiKeyQueryParameter(apiKey)
   if (address) url += `&address=${address}`
   if (assetAddress) url += `&contractaddress=${assetAddress}`
@@ -134,7 +135,7 @@ export const getTokenTransactionHistory = async ({
       .reduce((acc, cur) => {
         const tx = getTxFromTokenTransaction(cur)
         return tx ? [...acc, tx] : acc
-      }, [] as Txs)
+      }, [] as Tx[])
   } catch (error) {
     return Promise.reject(error)
   }

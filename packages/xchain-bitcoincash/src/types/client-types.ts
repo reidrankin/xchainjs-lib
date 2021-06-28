@@ -1,20 +1,7 @@
-import { Address, Balance, FeeOptionKey, Fees } from '@xchainjs/xchain-client'
+import { Address, Balance, FeeRate, TxHash } from '@xchainjs/xchain-client'
 
-export type FeeRate = number
-export type FeeRates = Record<FeeOptionKey, FeeRate>
-
-export type FeesWithRates = { rates: FeeRates; fees: Fees }
-
-export type NormalTxParams = { addressTo: string; amount: number; feeRate: number }
+export type NormalTxParams = { addressTo: Address; amount: number; feeRate: FeeRate }
 export type VaultTxParams = NormalTxParams & { memo: string }
-
-// We might extract it into xchain-client later
-export type DerivePath = { mainnet: string; testnet: string }
-
-export type ClientUrl = {
-  testnet: string
-  mainnet: string
-}
 
 export type Witness = {
   value: number
@@ -22,15 +9,13 @@ export type Witness = {
 }
 
 export type UTXO = {
-  hash: string
+  hash: TxHash
   index: number
   value: number
   witnessUtxo: Witness
   address: Address
   txHex: string
 }
-
-export type UTXOs = UTXO[]
 
 export type GetChangeParams = {
   valueOut: number

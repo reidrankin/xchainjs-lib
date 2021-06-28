@@ -1,44 +1,38 @@
-import { ethers, BigNumberish, BigNumber, Wallet } from 'ethers'
+import { ethers, BigNumberish, BigNumber } from 'ethers'
 import { Provider, TransactionResponse } from '@ethersproject/abstract-provider'
 import { EtherscanProvider, getDefaultProvider } from '@ethersproject/providers'
 
 import erc20ABI from './data/erc20.json'
-import { toUtf8Bytes, parseUnits, HDNode } from 'ethers/lib/utils'
+import { toUtf8Bytes, parseUnits } from 'ethers/lib/utils'
 import {
   GasOracleResponse,
-  Network as EthNetwork,
-  ExplorerUrl,
   TxOverrides,
   GasPrices,
-  FeesParams,
   FeesWithGasPricesAndLimits,
   InfuraCreds,
   ApproveParams,
 } from './types'
 import {
-  RootDerivationPaths,
   Address,
-  Network as XChainNetwork,
+  Balance,
+  Client as BaseClient,
+  ClientParams as BaseClientParams,
+  FeeOption,
+  FeeType,
+  Fees,
+  MultiAssetClient,
+  Network,
   Tx,
   TxsPage,
-  XChainClient,
-  XChainClientParams,
   TxParams,
   TxHash,
-  Fees,
   TxHistoryParams,
-  Balances,
-  Network,
-  FeeOptionKey,
-  FeesParams as XFeesParams,
 } from '@xchainjs/xchain-client'
 import { AssetETH, baseAmount, BaseAmount, assetToString, Asset, delay } from '@xchainjs/xchain-util'
-import * as Crypto from '@xchainjs/xchain-crypto'
 import * as ethplorerAPI from './ethplorer-api'
 import * as etherscanAPI from './etherscan-api'
 import {
   ETH_DECIMAL,
-  ethNetworkToXchains,
   xchainNetworkToEths,
   getTokenAddress,
   validateAddress,
@@ -52,168 +46,75 @@ import {
   getTxFromEthplorerEthTransaction,
   getTokenBalances,
 } from './utils'
+import { Wallet } from './wallet'
 
-/**
- * Interface for custom Ethereum client
- */
-export interface EthereumClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  call<T>(
-    walletIndex: number,
-    asset: Address,
-    abi: ethers.ContractInterface,
-    func: string,
-    params: Array<unknown>,
-  ): Promise<T>
-  estimateCall(
-    asset: Address,
-    abi: ethers.ContractInterface,
-    func: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    params: Array<any>,
-  ): Promise<BigNumber>
-  estimateGasPrices(): Promise<GasPrices>
-  estimateGasLimit(params: FeesParams): Promise<BigNumber>
-  estimateFeesWithGasPricesAndLimits(params: FeesParams): Promise<FeesWithGasPricesAndLimits>
-
-  isApproved(spender: Address, sender: Address, amount: BaseAmount): Promise<boolean>
-  approve(
-    params: ApproveParams & {
-      feeOptionKey?: FeeOptionKey
-    },
-  ): Promise<TransactionResponse>
-}
-
-export type EthereumClientParams = XChainClientParams & {
-  ethplorerUrl?: string
-  ethplorerApiKey?: string
-  explorerUrl?: ExplorerUrl
+export interface ClientParams extends BaseClientParams {
+  ethplorerUrl: string
+  ethplorerApiKey: string
   etherscanApiKey?: string
   infuraCreds?: InfuraCreds
 }
 
-/**
- * Custom Ethereum client
- */
-export default class Client implements XChainClient, EthereumClient {
-  private network: EthNetwork
-  private hdNode!: HDNode
-  private etherscanApiKey?: string
-  private explorerUrl: ExplorerUrl
-  private infuraCreds: InfuraCreds | undefined
-  private ethplorerUrl: string
-  private ethplorerApiKey: string
-  private rootDerivationPaths: RootDerivationPaths
-  private providers: Map<XChainNetwork, Provider> = new Map<XChainNetwork, Provider>()
-
-  /**
-   * Constructor
-   * @param {EthereumClientParams} params
-   */
-  constructor({
-    network = 'testnet',
-    ethplorerUrl = 'https://api.ethplorer.io',
-    ethplorerApiKey = 'freekey',
-    explorerUrl,
-    phrase = '',
-    rootDerivationPaths = {
-      mainnet: `m/44'/60'/0'/0/`,
-      testnet: `m/44'/60'/0'/0/`, // this is INCORRECT but makes the unit tests pass
+export const MAINNET_PARAMS: ClientParams = {
+  network: Network.Mainnet,
+  getFullDerivationPath: (index: number) => `44'/60'/0'/0/${index}`,
+  explorer: {
+    url: 'https://etherscan.io',
+    getAddressUrl(address: string) {
+      return `${this.url}/address/${address}`
     },
-    etherscanApiKey,
-    infuraCreds,
-  }: EthereumClientParams) {
-    this.rootDerivationPaths = rootDerivationPaths
-    this.network = xchainNetworkToEths(network)
-    this.setPhrase(phrase)
-    this.infuraCreds = infuraCreds
-    this.etherscanApiKey = etherscanApiKey
-    this.ethplorerUrl = ethplorerUrl
-    this.ethplorerApiKey = ethplorerApiKey
-    this.explorerUrl = explorerUrl || this.getDefaultExplorerURL()
-    this.setupProviders()
-  }
+    getTxUrl(txid: string) {
+      return `${this.url}/tx/${txid}`
+    },
+  },
+  ethplorerUrl: 'https://api.ethplorer.io',
+  ethplorerApiKey: 'freekey',
+}
 
-  /**
-   * Purge client.
-   *
-   * @returns {void}
-   */
-  purgeClient = (): void => {
-    this.hdNode = HDNode.fromMnemonic('')
-  }
+export const TESTNET_PARAMS: ClientParams = {
+  ...MAINNET_PARAMS,
+  network: Network.Testnet,
+  getFullDerivationPath: (index: number) => `44'/60'/0'/0/${index}`, // this is INCORRECT but makes the unit tests pass
+  explorer: {
+    ...MAINNET_PARAMS.explorer,
+    url: 'https://ropsten.etherscan.io',
+  },
+}
 
-  /**
-   * Set/Update the explorer url.
-   *
-   * @param {string} url The explorer url.
-   * @returns {void}
-   */
-  setExplorerURL = (url: ExplorerUrl): void => {
-    this.explorerUrl = url
-  }
+export class Client extends BaseClient<ClientParams, Wallet> implements MultiAssetClient {
+  readonly provider: Provider
 
-  /**
-   * Get the current network.
-   *
-   * @returns {Network} The current network. (`mainnet` or `testnet`)
-   */
-  getNetwork = (): XChainNetwork => {
-    return ethNetworkToXchains(this.network)
-  }
-
-  /**
-   * Get the current address.
-   *
-   * @returns {Address} The current address.
-   *
-   * @throws {"Phrase must be provided"}
-   * Thrown if phrase has not been set before. A phrase is needed to create a wallet and to derive an address from it.
-   */
-  getAddress = (index = 0): Address => {
-    if (index < 0) {
-      throw new Error('index must be greater than zero')
-    }
-    return this.hdNode.derivePath(this.getFullDerivationPath(index)).address.toLowerCase()
-  }
-
-  /**
-   * Get etherjs wallet interface.
-   *
-   * @returns {Wallet} The current etherjs wallet interface.
-   *
-   * @throws {"Phrase must be provided"}
-   * Thrown if phrase has not been set before. A phrase is needed to create a wallet and to derive an address from it.
-   */
-  getWallet = (index = 0): ethers.Wallet => {
-    return new Wallet(this.hdNode.derivePath(this.getFullDerivationPath(index))).connect(this.getProvider())
-  }
-  setupProviders = (): void => {
-    if (this.infuraCreds) {
-      // Infura provider takes either a string of project id
-      // or an object of id and secret
-      const testnetProvider = this.infuraCreds.projectSecret
-        ? new ethers.providers.InfuraProvider(EthNetwork.TEST, this.infuraCreds)
-        : new ethers.providers.InfuraProvider(EthNetwork.TEST, this.infuraCreds.projectId)
-      const mainnetProvider = this.infuraCreds.projectSecret
-        ? new ethers.providers.InfuraProvider(EthNetwork.MAIN, this.infuraCreds)
-        : new ethers.providers.InfuraProvider(EthNetwork.MAIN, this.infuraCreds.projectId)
-      this.providers.set('testnet', testnetProvider)
-      this.providers.set('mainnet', mainnetProvider)
+  protected constructor(params: ClientParams) {
+    super(params)
+    const infuraCreds = this.params.infuraCreds
+    if (infuraCreds !== undefined) {
+      this.provider = new ethers.providers.InfuraProvider(
+        xchainNetworkToEths(this.params.network),
+        infuraCreds.projectSecret ? infuraCreds : infuraCreds.projectId,
+      )
     } else {
-      this.providers.set('testnet', getDefaultProvider(EthNetwork.TEST))
-      this.providers.set('mainnet', getDefaultProvider(EthNetwork.MAIN))
+      this.provider = getDefaultProvider(xchainNetworkToEths(this.params.network))
     }
   }
 
+  static readonly create = Client.bindFactory((x: ClientParams) => new Client(x))
+
   /**
-   * Get etherjs Provider interface.
-   *
-   * @returns {Provider} The current etherjs Provider interface.
+   * @deprecated
    */
-  getProvider = (): Provider => {
-    const net = ethNetworkToXchains(this.network)
-    return this.providers.get(net) || getDefaultProvider(net)
+  getProvider(): Provider {
+    return this.provider
+  }
+
+  async getSigner(index = 0): Promise<ethers.Signer> {
+    if (this.wallet === null) throw new Error('client must be unlocked')
+    const signer = await this.wallet.getSigner(index, this.provider)
+    return signer
+  }
+
+  protected async getVoidSigner(index: number): Promise<ethers.VoidSigner> {
+    if (this.wallet === null) throw new Error('client must be unlocked')
+    return new ethers.VoidSigner(await this.getAddress(index), this.provider)
   }
 
   /**
@@ -221,132 +122,24 @@ export default class Client implements XChainClient, EthereumClient {
    *
    * @returns {EtherscanProvider} The current etherjs EtherscanProvider interface.
    */
-  getEtherscanProvider = (): EtherscanProvider => {
-    return new EtherscanProvider(this.network, this.etherscanApiKey)
+  protected async getEtherscanProvider(): Promise<EtherscanProvider> {
+    return new EtherscanProvider(this.params.network, this.params.etherscanApiKey)
   }
 
-  /**
-   * Get the explorer url.
-   *
-   * @returns {string} The explorer url for ethereum based on the current network.
-   */
-  getExplorerUrl = (): string => {
-    return this.getExplorerUrlByNetwork(this.getNetwork())
-  }
-
-  /**
-   * Get the explorer url.
-   *
-   * @returns {ExplorerUrl} The explorer url (both mainnet and testnet) for ethereum.
-   */
-  private getDefaultExplorerURL = (): ExplorerUrl => {
-    return {
-      testnet: 'https://ropsten.etherscan.io',
-      mainnet: 'https://etherscan.io',
-    }
-  }
-
-  /**
-   * Get the explorer url.
-   *
-   * @param {Network} network
-   * @returns {string} The explorer url for ethereum based on the network.
-   */
-  private getExplorerUrlByNetwork = (network: Network): string => {
-    return this.explorerUrl[network]
-  }
-
-  /**
-   * Get the explorer url for the given address.
-   *
-   * @param {Address} address
-   * @returns {string} The explorer url for the given address.
-   */
-  getExplorerAddressUrl = (address: Address): string => {
-    return `${this.getExplorerUrl()}/address/${address}`
-  }
-
-  /**
-   * Get the explorer url for the given transaction id.
-   *
-   * @param {string} txID
-   * @returns {string} The explorer url for the given transaction id.
-   */
-  getExplorerTxUrl = (txID: string): string => {
-    return `${this.getExplorerUrl()}/tx/${txID}`
-  }
-
-  /**
-   * Set/update the current network.
-   *
-   * @param {Network} network `mainnet` or `testnet`.
-   * @returns {void}
-   *
-   * @throws {"Network must be provided"}
-   * Thrown if network has not been set before.
-   */
-  setNetwork = (network: XChainNetwork): void => {
-    if (!network) {
-      throw new Error('Network must be provided')
-    } else {
-      this.network = xchainNetworkToEths(network)
-    }
-  }
-  /**
-   * Get getFullDerivationPath
-   *
-   * @param {number} index the HD wallet index
-   * @returns {string} The derivation path based on the network.
-   */
-  getFullDerivationPath(index: number): string {
-    return this.rootDerivationPaths[this.getNetwork()] + `${index}`
-  }
-  /**
-   * Set/update a new phrase (Eg. If user wants to change wallet)
-   *
-   * @param {string} phrase A new phrase.
-   * @returns {Address} The address from the given phrase
-   *
-   * @throws {"Invalid phrase"}
-   * Thrown if the given phase is invalid.
-   */
-  setPhrase = (phrase: string, walletIndex = 0): Address => {
-    if (!Crypto.validatePhrase(phrase)) {
-      throw new Error('Invalid phrase')
-    }
-    this.hdNode = HDNode.fromMnemonic(phrase)
-    return this.getAddress(walletIndex)
-  }
-
-  /**
-   * Validate the given address.
-   *
-   * @param {Address} address
-   * @returns {boolean} `true` or `false`
-   */
-  validateAddress = (address: Address): boolean => {
+  async validateAddress(address: Address): Promise<boolean> {
     return validateAddress(address)
   }
 
-  /**
-   * Get the ETH balance of a given address.
-   *
-   * @param {Address} address By default, it will return the balance of the current wallet. (optional)
-   * @returns {Array<Balances>} The all balance of the address.
-   *
-   * @throws {"Invalid asset"} throws when the give asset is an invalid one
-   */
-  getBalance = async (address: Address, assets?: Asset[]): Promise<Balances> => {
-    try {
-      const ethAddress = address || this.getAddress()
-      // get ETH balance directly from provider
-      const ethBalance: BigNumber = await this.getProvider().getBalance(ethAddress)
-      const ethBalanceAmount = baseAmount(ethBalance.toString(), ETH_DECIMAL)
+  async getBalance(address: Address, assets?: Asset[]): Promise<Balance[]> {
+    // get ETH balance directly from provider
+    const ethBalance: BigNumber = await this.getProvider().getBalance(address)
+    const ethBalanceAmount = baseAmount(ethBalance.toString(), ETH_DECIMAL)
 
-      if (this.getNetwork() === 'mainnet') {
+    switch (this.params.network) {
+      case Network.Mainnet: {
         // use ethplorerAPI for mainnet - ignore assets
-        const account = await ethplorerAPI.getAddress(this.ethplorerUrl, address, this.ethplorerApiKey)
-        const balances: Balances = [
+        const account = await ethplorerAPI.getAddress(this.params.ethplorerUrl, address, this.params.ethplorerApiKey)
+        const balances: Balance[] = [
           {
             asset: AssetETH,
             amount: ethBalanceAmount,
@@ -358,7 +151,8 @@ export default class Client implements XChainClient, EthereumClient {
         }
 
         return balances
-      } else {
+      }
+      case Network.Testnet: {
         // use etherscan for testnet
 
         const newAssets = assets || [AssetETH]
@@ -369,7 +163,7 @@ export default class Client implements XChainClient, EthereumClient {
         const balances = []
         for (let i = 0; i < newAssets.length; i++) {
           const asset = newAssets[i]
-          const etherscan = this.getEtherscanProvider()
+          const etherscan = await this.getEtherscanProvider()
           if (assetToString(asset) !== assetToString(AssetETH)) {
             // Handle token balances
             const assetAddress = getTokenAddress(asset)
@@ -383,8 +177,9 @@ export default class Client implements XChainClient, EthereumClient {
               apiKey: etherscan.apiKey,
             })
             const decimals =
-              BigNumber.from(await this.call<BigNumberish>(0, assetAddress, erc20ABI, 'decimals', [])).toNumber() ||
-              ETH_DECIMAL
+              BigNumber.from(
+                await this.callOffline<BigNumberish>(0, assetAddress, erc20ABI, 'decimals', []),
+              ).toNumber() || ETH_DECIMAL
 
             if (!Number.isNaN(decimals)) {
               balances.push({
@@ -406,11 +201,6 @@ export default class Client implements XChainClient, EthereumClient {
 
         return balances
       }
-    } catch (error) {
-      if (error.toString().includes('Invalid API Key')) {
-        return Promise.reject(new Error('Invalid API Key'))
-      }
-      return Promise.reject(error)
     }
   }
 
@@ -421,42 +211,38 @@ export default class Client implements XChainClient, EthereumClient {
    * @param {TxHistoryParams} params The options to get transaction history. (optional)
    * @returns {TxsPage} The transaction history.
    */
-  getTransactions = async (params?: TxHistoryParams): Promise<TxsPage> => {
-    try {
-      const offset = params?.offset || 0
-      const limit = params?.limit || 10
-      const assetAddress = params?.asset
+  async getTransactions(params: TxHistoryParams): Promise<TxsPage> {
+    const offset = params?.offset || 0
+    const limit = params?.limit || 10
+    const assetAddress = params?.asset
 
-      const maxCount = 10000
+    const maxCount = 10000
 
-      let transations
-      const etherscan = this.getEtherscanProvider()
+    let transactions
+    const etherscan = await this.getEtherscanProvider()
 
-      if (assetAddress) {
-        transations = await etherscanAPI.getTokenTransactionHistory({
-          baseUrl: etherscan.baseUrl,
-          address: params?.address,
-          assetAddress,
-          page: 0,
-          offset: maxCount,
-          apiKey: etherscan.apiKey,
-        })
-      } else {
-        transations = await etherscanAPI.getETHTransactionHistory({
-          baseUrl: etherscan.baseUrl,
-          address: params?.address,
-          page: 0,
-          offset: maxCount,
-          apiKey: etherscan.apiKey,
-        })
-      }
+    if (assetAddress) {
+      transactions = await etherscanAPI.getTokenTransactionHistory({
+        baseUrl: etherscan.baseUrl,
+        address: params?.address,
+        assetAddress,
+        page: 0,
+        offset: maxCount,
+        apiKey: etherscan.apiKey,
+      })
+    } else {
+      transactions = await etherscanAPI.getETHTransactionHistory({
+        baseUrl: etherscan.baseUrl,
+        address: params?.address,
+        page: 0,
+        offset: maxCount,
+        apiKey: etherscan.apiKey,
+      })
+    }
 
-      return {
-        total: transations.length,
-        txs: transations.filter((_, index) => index >= offset && index < offset + limit),
-      }
-    } catch (error) {
-      return Promise.reject(error)
+    return {
+      total: transactions.length,
+      txs: transactions.filter((_, index) => index >= offset && index < offset + limit),
     }
   }
 
@@ -470,25 +256,23 @@ export default class Client implements XChainClient, EthereumClient {
    * @throws {"Need to provide valid txId"}
    * Thrown if the given txId is invalid.
    */
-  getTransactionData = async (txId: string, assetAddress?: Address): Promise<Tx> => {
-    try {
-      if (this.getNetwork() === 'mainnet') {
+  async getTransactionData(txId: string, assetAddress?: Address): Promise<Tx> {
+    switch (this.params.network) {
+      case Network.Mainnet: {
         // use ethplorerAPI for mainnet - ignore assetAddress
-        const txInfo = await ethplorerAPI.getTxInfo(this.ethplorerUrl, txId, this.ethplorerApiKey)
+        const txInfo = await ethplorerAPI.getTxInfo(this.params.ethplorerUrl, txId, this.params.ethplorerApiKey)
 
-        if (txInfo.operations && txInfo.operations.length > 0) {
-          const tx = getTxFromEthplorerTokenOperation(txInfo.operations[0])
-          if (!tx) {
-            throw new Error('Could not parse transaction data')
-          }
-
-          return tx
-        } else {
+        if (txInfo.operations === undefined || txInfo.operations.length === 0) {
           return getTxFromEthplorerEthTransaction(txInfo)
         }
-      } else {
+
+        const tx = getTxFromEthplorerTokenOperation(txInfo.operations[0])
+        if (!tx) throw new Error('Could not parse transaction data')
+        return tx
+      }
+      case Network.Testnet: {
         let tx
-        const etherscan = this.getEtherscanProvider()
+        const etherscan = await this.getEtherscanProvider()
         const txInfo = await etherscan.getTransaction(txId)
         if (txInfo) {
           if (assetAddress) {
@@ -516,66 +300,45 @@ export default class Client implements XChainClient, EthereumClient {
           }
         }
 
-        if (!tx) {
-          throw new Error('Could not get transaction history')
-        }
-
+        if (!tx) throw new Error('Could not get transaction history')
         return tx
       }
-    } catch (error) {
-      return Promise.reject(error)
     }
   }
 
-  /**
-   * Call a contract function.
-   * @template T The result interface.
-   * @param {Address} address The contract address.
-   * @param {ContractInterface} abi The contract ABI json.
-   * @param {string} func The function to be called.
-   * @param {Array<any>} params The parameters of the function.
-   * @returns {T} The result of the contract function call.
-   *
-   * @throws {"address must be provided"}
-   * Thrown if the given contract address is empty.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  call = async <T>(
-    walletIndex = 0,
+  async call<T>(
+    index: number,
     contractAddress: Address,
     abi: ethers.ContractInterface,
     func: string,
     params: Array<unknown>,
-  ): Promise<T> => {
-    if (!contractAddress) {
-      return Promise.reject(new Error('contractAddress must be provided'))
-    }
-    const contract = new ethers.Contract(contractAddress, abi, this.getProvider()).connect(this.getWallet(walletIndex))
+  ): Promise<T> {
+    const signer = await this.getSigner(index)
+    const contract = new ethers.Contract(contractAddress, abi, this.provider).connect(signer)
     return contract[func](...params)
   }
 
-  /**
-   * Call a contract function.
-   * @param {Address} address The contract address.
-   * @param {ContractInterface} abi The contract ABI json.
-   * @param {string} func The function to be called.
-   * @param {Array<any>} params The parameters of the function.
-   * @returns {BigNumber} The result of the contract function call.
-   *
-   * @throws {"address must be provided"}
-   * Thrown if the given contract address is empty.
-   */
-  estimateCall = async (
+  async callOffline<T>(
+    index: number,
     contractAddress: Address,
     abi: ethers.ContractInterface,
     func: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    params: Array<any>,
-  ): Promise<BigNumber> => {
-    if (!contractAddress) {
-      return Promise.reject(new Error('contractAddress must be provided'))
-    }
-    const contract = new ethers.Contract(contractAddress, abi, this.getProvider()).connect(this.getWallet(0))
+    params: Array<unknown>,
+  ): Promise<T> {
+    const signer = await this.getVoidSigner(index)
+    const contract = new ethers.Contract(contractAddress, abi, this.provider).connect(signer)
+    return contract[func](...params)
+  }
+
+  async estimateCall(
+    contractAddress: Address,
+    abi: ethers.ContractInterface,
+    func: string,
+    params: Array<unknown>,
+    index = 0,
+  ): Promise<BigNumber> {
+    const signer = await this.getVoidSigner(index)
+    const contract = new ethers.Contract(contractAddress, abi, this.provider).connect(signer)
     return contract.estimateGas[func](...params)
   }
 
@@ -587,14 +350,10 @@ export default class Client implements XChainClient, EthereumClient {
    * @param {BaseAmount} amount The amount of token.
    * @returns {boolean} `true` or `false`.
    */
-  isApproved = async (spender: Address, sender: Address, amount: BaseAmount): Promise<boolean> => {
-    try {
-      const txAmount = BigNumber.from(amount.amount().toFixed())
-      const allowance = await this.call<BigNumberish>(0, sender, erc20ABI, 'allowance', [spender, spender])
-      return txAmount.lte(allowance)
-    } catch (error) {
-      return Promise.reject(error)
-    }
+  async isApproved(spender: Address, sender: Address, amount: BaseAmount): Promise<boolean> {
+    const txAmount = BigNumber.from(amount.amount().toFixed())
+    const allowance = await this.callOffline<BigNumberish>(0, sender, erc20ABI, 'allowance', [spender, spender])
+    return txAmount.lte(allowance)
   }
 
   /**
@@ -603,42 +362,43 @@ export default class Client implements XChainClient, EthereumClient {
    * @param {number} walletIndex which wallet to use to make the call
    * @param {Address} spender The spender index.
    * @param {Address} sender The sender address.
-   * @param {feeOptionKey} FeeOptionKey Fee option (optional)
+   * @param {feeOption} FeeOption Fee option (optional)
    * @param {BaseAmount} amount The amount of token. By default, it will be unlimited token allowance. (optional)
    * @returns {TransactionResponse} The transaction result.
    */
-  approve = async ({
-    walletIndex = 0,
+  async approve({
+    walletIndex: index,
     spender,
     sender,
-    feeOptionKey,
+    feeOptionKey: feeOption,
     amount,
-  }: ApproveParams): Promise<TransactionResponse> => {
+  }: ApproveParams & { feeOptionKey?: FeeOption }): Promise<TransactionResponse> {
+    index ??= 0
     const gasPrice =
-      feeOptionKey &&
+      feeOption &&
       BigNumber.from(
         (
           await this.estimateGasPrices()
-            .then((prices) => prices[feeOptionKey])
-            .catch(() => getDefaultGasPrices()[feeOptionKey])
+            .then((prices) => prices[feeOption])
+            .catch(() => getDefaultGasPrices()[feeOption])
         )
           .amount()
           .toFixed(),
       )
-    const gasLimit = await this.estimateApprove({ spender, sender, amount }).catch(() => undefined)
+    const gasLimit = await this.estimateApprove({ walletIndex: index, spender, sender, amount }).catch(() => undefined)
 
-    try {
-      const txAmount = amount ? BigNumber.from(amount.amount().toFixed()) : MAX_APPROVAL
-      const txResult = await this.call<TransactionResponse>(walletIndex, sender, erc20ABI, 'approve', [
-        spender,
-        txAmount,
-        { from: this.getAddress(), gasPrice, gasLimit },
-      ])
+    const txAmount = amount ? BigNumber.from(amount.amount().toFixed()) : MAX_APPROVAL
+    const txResult = await this.call<TransactionResponse>(index, sender, erc20ABI, 'approve', [
+      spender,
+      txAmount,
+      {
+        from: await this.getAddress(index),
+        gasPrice,
+        gasLimit,
+      },
+    ])
 
-      return txResult
-    } catch (error) {
-      return Promise.reject(error)
-    }
+    return txResult
   }
 
   /**
@@ -649,111 +409,96 @@ export default class Client implements XChainClient, EthereumClient {
    * @param {BaseAmount} amount The amount of token. By default, it will be unlimited token allowance. (optional)
    * @returns {BigNumber} The estimated gas limit.
    */
-  estimateApprove = async ({
-    spender,
-    sender,
-    amount,
-  }: Omit<ApproveParams, 'feeOptionKey' | 'walletIndex'>): Promise<BigNumber> => {
-    try {
-      const txAmount = amount ? BigNumber.from(amount.amount().toFixed()) : MAX_APPROVAL
-      const gasLimit = await this.estimateCall(sender, erc20ABI, 'approve', [
-        spender,
-        txAmount,
-        { from: this.getAddress() },
-      ])
+  async estimateApprove({ walletIndex: index, spender, sender, amount }: ApproveParams): Promise<BigNumber> {
+    index ??= 0
 
-      return gasLimit
-    } catch (error) {
-      return Promise.reject(error)
-    }
+    const txAmount = amount ? BigNumber.from(amount.amount().toFixed()) : MAX_APPROVAL
+    const gasLimit = await this.estimateCall(
+      sender,
+      erc20ABI,
+      'approve',
+      [spender, txAmount, { from: await this.getAddress(index) }],
+      index,
+    )
+
+    return gasLimit
   }
 
-  /**
-   * Transfer ETH.
-   *
-   * @param {TxParams} params The transfer options.
-   * @param {feeOptionKey} FeeOptionKey Fee option (optional)
-   * @param {gasPrice} BaseAmount Gas price (optional)
-   * @param {gasLimit} BigNumber Gas limit (optional)
-   *
-   * A given `feeOptionKey` wins over `gasPrice` and `gasLimit`
-   *
-   * @returns {TxHash} The transaction hash.
-   *
-   * @throws {"Invalid asset address"}
-   * Thrown if the given asset is invalid.
-   */
-  transfer = async ({
-    walletIndex = 0,
-    asset,
-    memo,
-    amount,
-    recipient,
-    feeOptionKey,
-    gasPrice,
-    gasLimit,
-  }: TxParams & {
-    feeOptionKey?: FeeOptionKey
-    gasPrice?: BaseAmount
-    gasLimit?: BigNumber
-  }): Promise<TxHash> => {
-    try {
-      const txAmount = BigNumber.from(amount.amount().toFixed())
+  async transfer(
+    params: TxParams & { gasLimit?: BigNumber } & (
+        | { feeOptionKey?: FeeOption; gasPrice?: never }
+        | { feeOptionKey?: never; gasPrice?: BaseAmount }
+      ),
+  ): Promise<TxHash> {
+    if (this.wallet === null) throw new Error('client must be unlocked')
+    const index = params.walletIndex ?? 0
+    if (!(Number.isSafeInteger(index) && index >= 0)) throw new Error('index must be a non-negative integer')
 
-      let assetAddress
-      if (asset && assetToString(asset) !== assetToString(AssetETH)) {
-        assetAddress = getTokenAddress(asset)
-      }
+    const { asset, memo, amount, recipient, feeOptionKey: feeOption, gasPrice, gasLimit } = params
 
-      const isETHAddress = assetAddress === ETHAddress
+    const txAmount = BigNumber.from(amount.amount().toFixed())
 
-      // feeOptionKey
-
-      const defaultGasLimit: ethers.BigNumber = isETHAddress ? SIMPLE_GAS_COST : BASE_TOKEN_GAS_COST
-
-      let overrides: TxOverrides = {
-        gasLimit: gasLimit || defaultGasLimit,
-        gasPrice: gasPrice && BigNumber.from(gasPrice.amount().toFixed()),
-      }
-
-      // override `overrides` if `feeOptionKey` is provided
-      if (feeOptionKey) {
-        const gasPrice = await this.estimateGasPrices()
-          .then((prices) => prices[feeOptionKey])
-          .catch(() => getDefaultGasPrices()[feeOptionKey])
-        const gasLimit = await this.estimateGasLimit({ asset, recipient, amount, memo }).catch(() => defaultGasLimit)
-
-        overrides = {
-          gasLimit,
-          gasPrice: BigNumber.from(gasPrice.amount().toFixed()),
-        }
-      }
-
-      let txResult
-      if (assetAddress && !isETHAddress) {
-        // Transfer ERC20
-        txResult = await this.call<TransactionResponse>(walletIndex, assetAddress, erc20ABI, 'transfer', [
-          recipient,
-          txAmount,
-          Object.assign({}, overrides),
-        ])
-      } else {
-        // Transfer ETH
-        const transactionRequest = Object.assign(
-          { to: recipient, value: txAmount },
-          {
-            ...overrides,
-            data: memo ? toUtf8Bytes(memo) : undefined,
-          },
-        )
-
-        txResult = await this.getWallet().sendTransaction(transactionRequest)
-      }
-
-      return txResult.hash
-    } catch (error) {
-      return Promise.reject(error)
+    let assetAddress
+    if (asset && assetToString(asset) !== assetToString(AssetETH)) {
+      assetAddress = getTokenAddress(asset)
     }
+
+    const isETHAddress = assetAddress === ETHAddress
+
+    // feeOption
+
+    const defaultGasLimit: ethers.BigNumber = isETHAddress ? SIMPLE_GAS_COST : BASE_TOKEN_GAS_COST
+
+    let overrides: TxOverrides = {
+      gasLimit: gasLimit ?? defaultGasLimit,
+      gasPrice: gasPrice && BigNumber.from(gasPrice.amount().toFixed()),
+    }
+
+    // override `overrides` if `feeOption` is provided
+    if (feeOption) {
+      const gasPrices = await this.estimateGasPrices().catch(() => getDefaultGasPrices())
+      const gasPrice = gasPrices[feeOption]
+      const gasLimit = await this.estimateGasLimit({
+        ...params,
+        walletIndex: index,
+      }).catch(() => defaultGasLimit)
+
+      overrides = {
+        ...overrides,
+        gasLimit,
+        gasPrice: BigNumber.from(gasPrice.amount().toFixed()),
+      }
+    }
+
+    let txResult
+    if (assetAddress && !isETHAddress) {
+      // Transfer ERC20
+      txResult = await this.call<TransactionResponse>(index, assetAddress, erc20ABI, 'transfer', [
+        recipient,
+        txAmount,
+        Object.assign({}, overrides),
+      ])
+    } else {
+      // Transfer ETH
+      const transactionRequest: ethers.providers.TransactionRequest = Object.assign(
+        {
+          nonce: await this.provider.getTransactionCount(await this.getAddress(index)),
+          chainId: (await this.provider.getNetwork()).chainId,
+          to: recipient,
+          value: txAmount,
+        },
+        {
+          ...overrides,
+          data: memo ? toUtf8Bytes(memo) : undefined,
+        },
+      )
+
+      const signer = await this.wallet.getSigner(index)
+      const signedTx = await signer.signTransaction(transactionRequest)
+      txResult = await this.provider.sendTransaction(signedTx)
+    }
+
+    return txResult.hash
   }
 
   /**
@@ -761,26 +506,20 @@ export default class Client implements XChainClient, EthereumClient {
    * @see https://etherscan.io/apis#gastracker
    *
    * @returns {GasPrices} The gas prices (average, fast, fastest) in `Wei` (`BaseAmount`)
-   *
-   * @throws {"Failed to estimate gas price"} Thrown if failed to estimate gas price.
    */
-  estimateGasPrices = async (): Promise<GasPrices> => {
-    try {
-      const etherscan = this.getEtherscanProvider()
-      const response: GasOracleResponse = await etherscanAPI.getGasOracle(etherscan.baseUrl, etherscan.apiKey)
+  async estimateGasPrices(): Promise<GasPrices> {
+    const etherscan = await this.getEtherscanProvider()
+    const response: GasOracleResponse = await etherscanAPI.getGasOracle(etherscan.baseUrl, etherscan.apiKey)
 
-      // Convert result of gas prices: `Gwei` -> `Wei`
-      const averageWei = parseUnits(response.SafeGasPrice, 'gwei')
-      const fastWei = parseUnits(response.ProposeGasPrice, 'gwei')
-      const fastestWei = parseUnits(response.FastGasPrice, 'gwei')
+    // Convert result of gas prices: `Gwei` -> `Wei`
+    const averageWei = parseUnits(response.SafeGasPrice, 'gwei')
+    const fastWei = parseUnits(response.ProposeGasPrice, 'gwei')
+    const fastestWei = parseUnits(response.FastGasPrice, 'gwei')
 
-      return {
-        average: baseAmount(averageWei.toString(), ETH_DECIMAL),
-        fast: baseAmount(fastWei.toString(), ETH_DECIMAL),
-        fastest: baseAmount(fastestWei.toString(), ETH_DECIMAL),
-      }
-    } catch (error) {
-      return Promise.reject(new Error(`Failed to estimate gas price: ${error.msg ?? error.toString()}`))
+    return {
+      average: baseAmount(averageWei.toString(), ETH_DECIMAL),
+      fast: baseAmount(fastWei.toString(), ETH_DECIMAL),
+      fastest: baseAmount(fastestWei.toString(), ETH_DECIMAL),
     }
   }
 
@@ -789,42 +528,31 @@ export default class Client implements XChainClient, EthereumClient {
    *
    * @param {FeesParams} params The transaction options.
    * @returns {BaseAmount} The estimated gas fee.
-   *
-   * @throws {"Failed to estimate gas limit"} Thrown if failed to estimate gas limit.
    */
-  estimateGasLimit = async ({ asset, recipient, amount, memo }: FeesParams): Promise<BigNumber> => {
-    try {
-      const txAmount = BigNumber.from(amount.amount().toFixed())
+  async estimateGasLimit({ walletIndex: index, asset, recipient, amount, memo }: TxParams): Promise<BigNumber> {
+    index ??= 0
+    const fromAddress = await this.getAddress(index)
+    const txAmount = BigNumber.from(amount.amount().toFixed())
 
-      let assetAddress
-      if (asset && assetToString(asset) !== assetToString(AssetETH)) {
-        assetAddress = getTokenAddress(asset)
+    const assetAddress = asset && assetToString(asset) !== assetToString(AssetETH) ? getTokenAddress(asset) : null
+
+    if (assetAddress !== null && assetAddress !== ETHAddress) {
+      // ERC20 gas estimate
+      const contract = new ethers.Contract(assetAddress, erc20ABI, this.provider)
+
+      return await contract.estimateGas.transfer(recipient, txAmount, {
+        from: fromAddress,
+      })
+    } else {
+      // ETH gas estimate
+      const transactionRequest = {
+        from: fromAddress,
+        to: recipient,
+        value: txAmount,
+        data: memo ? toUtf8Bytes(memo) : undefined,
       }
 
-      let estimate
-
-      if (assetAddress && assetAddress !== ETHAddress) {
-        // ERC20 gas estimate
-        const contract = new ethers.Contract(assetAddress, erc20ABI, this.getProvider())
-
-        estimate = await contract.estimateGas.transfer(recipient, txAmount, {
-          from: this.getAddress(),
-        })
-      } else {
-        // ETH gas estimate
-        const transactionRequest = {
-          from: this.getAddress(),
-          to: recipient,
-          value: txAmount,
-          data: memo ? toUtf8Bytes(memo) : undefined,
-        }
-
-        estimate = await this.getProvider().estimateGas(transactionRequest)
-      }
-
-      return estimate
-    } catch (error) {
-      return Promise.reject(new Error(`Failed to estimate gas limit: ${error.msg ?? error.toString()}`))
+      return await this.provider.estimateGas(transactionRequest)
     }
   }
 
@@ -833,58 +561,30 @@ export default class Client implements XChainClient, EthereumClient {
    *
    * @param {FeesParams} params
    * @returns {FeesWithGasPricesAndLimits} The estimated gas prices/limits.
-   *
-   * @throws {"Failed to estimate fees, gas price, gas limit"} Thrown if failed to estimate fees, gas price, gas limit.
    */
-  estimateFeesWithGasPricesAndLimits = async (params: FeesParams): Promise<FeesWithGasPricesAndLimits> => {
-    try {
-      // gas prices
-      const gasPrices = await this.estimateGasPrices()
-      const { fast: fastGP, fastest: fastestGP, average: averageGP } = gasPrices
+  async estimateFeesWithGasPricesAndLimits(params: TxParams): Promise<FeesWithGasPricesAndLimits> {
+    // gas prices
+    const gasPrices = await this.estimateGasPrices()
+    const { fast: fastGP, fastest: fastestGP, average: averageGP } = gasPrices
 
-      // gas limits
-      const gasLimit = await this.estimateGasLimit({
-        asset: params.asset,
-        amount: params.amount,
-        recipient: params.recipient,
-        memo: params.memo,
-      })
+    // gas limits
+    const gasLimit = await this.estimateGasLimit(params)
 
-      return {
-        gasPrices,
-        fees: {
-          type: 'byte',
-          average: getFee({ gasPrice: averageGP, gasLimit }),
-          fast: getFee({ gasPrice: fastGP, gasLimit }),
-          fastest: getFee({ gasPrice: fastestGP, gasLimit }),
-        },
-        gasLimit,
-      }
-    } catch (error) {
-      return Promise.reject(
-        new Error(`Failed to estimate fees, gas price, gas limit: ${error.msg ?? error.toString()}`),
-      )
+    return {
+      gasPrices,
+      fees: {
+        type: FeeType.PerByte,
+        average: getFee({ gasPrice: averageGP, gasLimit }),
+        fast: getFee({ gasPrice: fastGP, gasLimit }),
+        fastest: getFee({ gasPrice: fastestGP, gasLimit }),
+      },
+      gasLimit,
     }
   }
 
-  /**
-   * Get fees.
-   *
-   * @param {FeesParams} params
-   * @returns {Fees} The average/fast/fastest fees.
-   *
-   * @throws {"Failed to get fees"} Thrown if failed to get fees.
-   */
-  getFees = async (params: XFeesParams & FeesParams): Promise<Fees> => {
-    if (!params) return Promise.reject('Params need to be passed')
+  async getFees(params?: TxParams): Promise<Fees> {
+    if (params === undefined) throw new TypeError('params required')
 
-    try {
-      const { fees } = await this.estimateFeesWithGasPricesAndLimits(params)
-      return fees
-    } catch (error) {
-      return Promise.reject(new Error(`Failed to get fees: ${error.msg ?? error.toString()}`))
-    }
+    return (await this.estimateFeesWithGasPricesAndLimits(params)).fees
   }
 }
-
-export { Client }

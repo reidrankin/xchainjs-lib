@@ -1,4 +1,10 @@
+import { Network } from '@xchainjs/xchain-client'
+import { AssetETH, ETHChain, assetToString, baseAmount } from '@xchainjs/xchain-util'
+import { ethers } from 'ethers'
 import nock from 'nock'
+
+import { mock_etherscan_api } from '../__mocks__/etherscan-api'
+import { EthNetwork } from '../src/types'
 import {
   getTokenAddress,
   xchainNetworkToEths,
@@ -7,7 +13,6 @@ import {
   validateSymbol,
   getDefaultFees,
   ETH_DECIMAL,
-  getPrefix,
   getTxFromTokenTransaction,
   getTxFromEthTransaction,
   filterSelfTxs,
@@ -16,27 +21,23 @@ import {
   getTxFromEthplorerEthTransaction,
   getTokenBalances,
 } from '../src/utils'
-import { baseAmount, assetToString, AssetETH, ETHChain } from '@xchainjs/xchain-util'
-import { Network } from '../src/types'
-import { ethers } from 'ethers'
-import { mock_etherscan_api } from '../__mocks__/etherscan-api'
 
 describe('ethereum/util', () => {
   describe('xchainNetworkToEths', () => {
-    it('should return mainnet ', () => {
-      expect(xchainNetworkToEths('mainnet')).toEqual(Network.MAIN)
+    it('should return Mainnet ', () => {
+      expect(xchainNetworkToEths(Network.Mainnet)).toEqual(EthNetwork.Main)
     })
-    it('should return testnet ', () => {
-      expect(xchainNetworkToEths('testnet')).toEqual(Network.TEST)
+    it('should return Testnet ', () => {
+      expect(xchainNetworkToEths(Network.Testnet)).toEqual(EthNetwork.Test)
     })
   })
 
   describe('ethNetworkToXchains', () => {
-    it('should return mainnet ', () => {
-      expect(ethNetworkToXchains(Network.MAIN)).toEqual('mainnet')
+    it('should return Mainnet ', () => {
+      expect(ethNetworkToXchains(EthNetwork.Main)).toEqual(Network.Mainnet)
     })
-    it('should return testnet ', () => {
-      expect(ethNetworkToXchains(Network.TEST)).toEqual('testnet')
+    it('should return Testnet ', () => {
+      expect(ethNetworkToXchains(EthNetwork.Test)).toEqual(Network.Testnet)
     })
   })
 
@@ -91,13 +92,6 @@ describe('ethereum/util', () => {
       expect(defaultFee.average.amount().isEqualTo(baseAmount('1050000000000000', ETH_DECIMAL).amount())).toBeTruthy()
       expect(defaultFee.fast.amount().isEqualTo(baseAmount('2100000000000000', ETH_DECIMAL).amount())).toBeTruthy()
       expect(defaultFee.fastest.amount().isEqualTo(baseAmount('3150000000000000', ETH_DECIMAL).amount())).toBeTruthy()
-    })
-  })
-
-  describe('getPrefix', () => {
-    it('should return the prefix ', () => {
-      const prefix = getPrefix()
-      expect(prefix).toEqual('0x')
     })
   })
 
@@ -414,7 +408,7 @@ describe('ethereum/util', () => {
         '0x0000000000000000000000000000000000000000000000000000000000000006',
       )
 
-      const provider = new ethers.providers.EtherscanProvider(xchainNetworkToEths('testnet'))
+      const provider = new ethers.providers.EtherscanProvider(xchainNetworkToEths(Network.Testnet))
 
       const eth_decimal = await getDecimal(AssetETH, provider)
       expect(eth_decimal).toEqual(ETH_DECIMAL)

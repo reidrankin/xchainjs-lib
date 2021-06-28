@@ -1,9 +1,8 @@
 import BigNumber from 'bignumber.js'
 import { fixedBN, formatBN } from './bn'
 import { trimZeros as trimZerosHelper } from './string'
-import { BTCChain, LTCChain, BNBChain, ETHChain, THORChain, BCHChain } from './chain.const'
-import { isChain } from './chain'
-import { Denomination, AssetAmount, BaseAmount, Amounts, Asset } from './types'
+import { BTCChain, LTCChain, BNBChain, ETHChain, THORChain, BCHChain, isChain } from './chain'
+import { Denomination, AssetAmount, BaseAmount, Amount, Asset } from './types'
 
 /**
  * Guard to check whether value is a BigNumber.Value or not
@@ -37,7 +36,7 @@ const ASSET_DECIMAL = 8
 export const assetAmount = (value: BigNumber.Value | undefined, decimal: number = ASSET_DECIMAL): AssetAmount => {
   const amount = fixedBN(value, decimal)
   return {
-    type: Denomination.ASSET,
+    type: Denomination.Asset,
     amount: () => amount,
     plus: (v: BigNumber.Value | AssetAmount, d: number = decimal) =>
       assetAmount(amount.plus(isBigNumberValue(v) ? v : v.amount()), d),
@@ -66,7 +65,7 @@ export const assetAmount = (value: BigNumber.Value | undefined, decimal: number 
 export const baseAmount = (value: BigNumber.Value | undefined, decimal: number = ASSET_DECIMAL): BaseAmount => {
   const amount = fixedBN(value, 0)
   return {
-    type: Denomination.BASE,
+    type: Denomination.Base,
     amount: () => amount,
     plus: (v: BigNumber.Value | BaseAmount, d: number = decimal) =>
       baseAmount(amount.plus(isBigNumberValue(v) ? v : v.amount()), d),
@@ -120,7 +119,7 @@ export const assetToBase = (asset: AssetAmount): BaseAmount => {
  * @param {BaseAmount|AssetAmount} v
  * @returns {boolean} `true` or `false`.
  * */
-export const isAssetAmount = (v: Amounts): v is AssetAmount => (v as AssetAmount).type === Denomination.ASSET
+export const isAssetAmount = (v: Amount<Denomination>): v is AssetAmount => v.type === Denomination.Asset
 
 /**
  * Guard to check whether value is an amount of a base value or not
@@ -128,7 +127,7 @@ export const isAssetAmount = (v: Amounts): v is AssetAmount => (v as AssetAmount
  * @param {BaseAmount|AssetAmount} v
  * @returns {boolean} `true` or `false`.
  * */
-export const isBaseAmount = (v: Amounts): v is BaseAmount => (v as BaseAmount).type === Denomination.BASE
+export const isBaseAmount = (v: Amount<Denomination>): v is BaseAmount => v.type === Denomination.Base
 
 /**
  * Formats an `AssetAmount` into `string` based on decimal places
